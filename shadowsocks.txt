@@ -16,6 +16,9 @@ $ clear
 清空历史命令
 $ echo > .bash_history
 
+#清空当前缓存中的命令
+history -c
+
 chown -R www:www /home/WebHost/
 
 return 301 https://$host$request_uri;
@@ -23,6 +26,11 @@ return 301 https://$host$request_uri;
 rewrite ^(.*)$  https://$host$1 permanent;
 
 cat /dev/null > /var/log/rsyncd.log 
+
+修改主机名
+# hostname  ##查看主机名
+# hostname k8s-node1  ##临时生效
+# hostnamectl set-hostname k8s-node1  ##重启后永久生效
 
 查看CentOS版本
 # cat /etc/redhat-release
@@ -232,9 +240,6 @@ firewall-cmd --reload
 
 #锁定不得任意更动
 chattr +i /etc/shadowsocks.json
-
-#清空当前缓存中的命令
-history -c
 
 function goPAGE() {
     if ((navigator.userAgent.match(/(phone|pad|pod|iPhone|iPod|ios|iPad|Android|Mobile|BlackBerry|IEMobile|MQQBrowser|JUC|Fennec|wOSBrowser|BrowserNG|WebOS|Symbian|Windows Phone)/i))) {
