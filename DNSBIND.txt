@@ -1,0 +1,130 @@
+DNS服务器安装
+操作系统
+Operating System     : CentOS 7 minimal server
+Hostname             : dns01.dapur.my.id
+IP Address           : 117.53.44.164
+域名前：dapur.my.id
+
+私人名称服务器
+IPv4 Glue records for dapur.my.id
+ns1.dapur.my.id.	43200	IN	A	117.53.44.164
+ns2.dapur.my.id.	43200	IN	A	117.53.44.164
+
+There are no IPv6 Glue records for dapur.my.id
+
+安装和配置绑定DNS服务器
+安装绑定DNS服务器
+yum update -y
+yum install bind bind-utils -y
+
+配置绑定DNS服务器
+编辑档案 /etc/named.conf
+
+mv /etc/named.conf /etc/named.conf-backup
+vi /etc/named.conf
+
+添加以下行：
+
+options {
+        listen-on port 53 { 127.0.0.1; 117.53.44.164; };
+        directory "/var/named";
+        dump-file "/var/named/data/cache_dump.db";
+        statistics-file "/var/named/data/named_stats.txt";
+        memstatistics-file "/var/named/data/named_mem_stats.txt";
+
+        allow-query { 127.0.0.1; 117.53.44.164; any; };
+        allow-query-cache { 127.0.0.1; 117.53.44.164; any ;};
+        };
+
+logging {
+        channel default_debug {
+                file "data/named.run";
+                severity dynamic;
+                };
+        };
+
+zone "dapur.my.id" {
+                type master;
+                file "/var/named/dapur.fwd";
+                };
+创建区域文件
+创建我们在"/etc/named.conf"文件中提到的正向和反向区域文件。
+
+创建DNS区域
+dapur.fwd在/var/named目录中创建文件。
+
+添加以下行：
+
+$TTL 86400
+@       IN      SOA      ns1.dapur.my.id. root.dapur.my.id.(
+                                2019100914      ;Serial
+                                3600            ;Refresh
+                                1800            ;Retry
+                                604800          ;Expire
+                                86400           ;Minimum TTL
+)
+
+@       IN      NS      ns1.dapur.my.id.
+@       IN      NS      ns2.dapur.my.id.
+
+@       IN      A       117.53.44.164
+ns1     IN      A       117.53.44.164
+ns2     IN      A       117.53.44.164
+
+www     IN      CNAME   dapur.my.id.
+
+检查配置文件
+检查DNS默认配置文件：
+
+named-checkconf /etc/named.conf
+如果未返回任何内容，则说明配置文件有效。
+
+检查区域文件：
+
+named-checkzone dapur.my.id /var/named/dapur.fwd
+样本输出：
+zone dapur.my.id/IN: loaded serial 2019100914
+OK
+
+启动DNS服务器
+systemctl start named
+systemctl enable named
+systemctl status named
+
+BIND DNS状态
+
+测试DNS服务器
+dig dapur.my.id
+样本输出：
+[root@dns01 ~]# dig dapur.my.id
+
+; <<>> DiG 9.11.4-P2-RedHat-9.11.4-9.P2.el7 <<>> dapur.my.id
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 16079
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;dapur.my.id.                   IN      A
+
+;; ANSWER SECTION:
+dapur.my.id.            86400   IN      A       117.53.44.164
+
+;; Query time: 3 msec
+;; SERVER: 43.224.19.110#53(43.224.19.110)
+;; WHEN: Wed Oct 09 12:06:56 WIB 2019
+;; MSG SIZE  rcvd: 56
+
+nslookup dapur.my.id
+样本输出：
+Server:         43.224.19.110
+Address:        43.224.19.110#53
+
+Non-authoritative answer:
+Name:   dapur.my.id
+Address: 117.53.44.164
+
+要确保DNS已解析
+https://intodns.com
