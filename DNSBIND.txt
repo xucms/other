@@ -1,130 +1,712 @@
-DNS服务器安装
-操作系统
-Operating System     : CentOS 7 minimal server
-Hostname             : dns01.dapur.my.id
-IP Address           : 117.53.44.164
-域名前：dapur.my.id
+从 APNIC 下载公开的中国大陆 IP 地址分配数据
+#!/bin/bash
+tmp=$(mktemp)
+wget -4 http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest -O $tmp
+cat $tmp | awk '{FS="|"}{if($2=="CN" && $3=="ipv6"){print $4 "/" $5}}' >chnroutes-v6.txt
+cat $tmp | awk '{FS="|"}{if($2=="CN" && $3=="ipv4"){print $4 "/" (32-log($5)/log(2))}}' >chnroutes.txt
+rm -f $tmp
 
-私人名称服务器
-IPv4 Glue records for dapur.my.id
-ns1.dapur.my.id.	43200	IN	A	117.53.44.164
-ns2.dapur.my.id.	43200	IN	A	117.53.44.164
+两台服务器（主服务器和辅助服务器）
+CentOS 或 Red Hat Enterprise Linux 7
+域名示例：example.com
+主IP地址：192.0.2.1
+备用IP地址：192.0.2.2
 
-There are no IPv6 Glue records for dapur.my.id
+标准DNS请求通过UDP端口53发生,响应大小超过512个字节(对于DNSSEC而言可能就是这样)则通过TCP端口53发送
 
-安装和配置绑定DNS服务器
-安装绑定DNS服务器
-yum update -y
-yum install bind bind-utils -y
+主服务器和辅助服务器之间的域传输将通过TCP端口53进行
+firewall-cmd --permanent --zone=public --add-port=53/tcp
+firewall-cmd --permanent --zone=public --add-port=53/udp
+firewall-cmd --reload
 
-配置绑定DNS服务器
-编辑档案 /etc/named.conf
+安装BIND
+bind-utils是用于测试和故障排除DNS相关的问题是非常有用的
+yum -y install bind bind-utils bind-chroot
 
-mv /etc/named.conf /etc/named.conf-backup
+配置主服务器
+第一步是修改named.conf通常预先配置为仅缓存名称服务器的文件
 vi /etc/named.conf
 
-添加以下行：
+为了使服务器能够响应外部请求,该 named过程将需要绑定到公共IP地址,该any值将绑定到分配给服务器的所有IP地址
+...
+listen-on port 53 { any; };
+listen-on-v6 port 53 { any; };
+...
+
+服务器将需要响应对应权威域名的所有传入查询,但默认情况下不应允许域名传输请求,也不应允许递归查询
+
+注意：对于权威域名服务器,打开了递归查询功能,相当于把他配置成了开放的DNS服务器,会造成大量的数据流量,影响正常业务提供,因此,在权威域名服务器,需要禁用递归查询,将 recursion 项由 yes; 改为 no;
+...
+allow-query     { any; };
+allow-transfer  { none; };
+recursion no;
+...
+
+这是named.conf针对权威服务器进行调整的完整文件示例
 
 options {
-        listen-on port 53 { 127.0.0.1; 117.53.44.164; };
-        directory "/var/named";
-        dump-file "/var/named/data/cache_dump.db";
-        statistics-file "/var/named/data/named_stats.txt";
-        memstatistics-file "/var/named/data/named_mem_stats.txt";
+    listen-on port 53 { any; };
+    listen-on-v6 port 53 { any; };
+    directory       "/var/named";
+    dump-file       "/var/named/data/cache_dump.db";
+    statistics-file "/var/named/data/named_stats.txt";
+    memstatistics-file "/var/named/data/named_mem_stats.txt";
 
-        allow-query { 127.0.0.1; 117.53.44.164; any; };
-        allow-query-cache { 127.0.0.1; 117.53.44.164; any ;};
-        };
+    recursing-file  "/var/named/data/recursing";
+    secroots-file   "/var/named/data/named.secroots";
+    allow-query     { any; };
+    allow-transfer  { none; };
+    recursion no;
+
+    #version none;
+    #hostname none;
+    #server-id none;
+    #auth-nxdomain yes;
+    #datasize default;
+
+    #rate-limit {
+        #slip 2; // Every other response truncated
+        #window 15; // Seconds to bucket
+        #responses-per-second 5;// # of good responses per prefix-length/sec
+        #referrals-per-second 5; // referral responses
+        #nodata-per-second 5; // nodata responses
+        #nxdomains-per-second 5; // nxdomain responses
+        #errors-per-second 5; // error responses
+        #all-per-second 20; // When we drop all
+        #log-only no; // Debugging mode
+        #pps-scale 250; // x / 1000 * per-second
+        #// = new drop limit
+        #exempt-clients { 127.0.0.1; 192.153.154.0/24; 192.160.238.0/24 };
+        #ipv4-prefix-length 24; // Define the IPv4 block size
+        #ipv6-prefix-length 56; // Define the IPv6 block size
+        #max-table-size 20000; // 40 bytes * this number = max memory
+        #min-table-size 500; // pre-allocate to speed startup
+    #};
+
+
+    dnssec-enable yes;
+    dnssec-validation yes;
+    dnssec-lookaside auto;
+
+    /* Path to ISC DLV key */
+    bindkeys-file "/etc/named.iscdlv.key";
+
+    managed-keys-directory "/var/named/dynamic";
+
+    pid-file "/run/named/named.pid";
+    session-keyfile "/run/named/session.key";
+};
 
 logging {
-        channel default_debug {
-                file "data/named.run";
-                severity dynamic;
-                };
-        };
+    channel default_debug {
+        file "data/named.run";
+        severity dynamic;
+    };
+};
 
-zone "dapur.my.id" {
-                type master;
-                file "/var/named/dapur.fwd";
-                };
+zone "." IN {
+    type hint;
+    file "named.ca";
+};
+
+include "/etc/named.rfc1912.zones";
+include "/etc/named.root.key";
+区域文件的路径和区域详细信息必须添加到 /etc/named.rfc1912.zones 文件中
+
+vi /etc/named.rfc1912.zones
+域名部分将声明为带有区域信息的文件的路径,该区域包含主区域和辅助服务器的IP地址
+
+zone "example.com" IN {
+    type master;
+    file "/var/named/master/example.com";
+    notify yes; //使用该功能，是指在主服器一旦有更新，立即通知从DNS
+    also-notify { 192.0.2.2;  }; //指定通知哪些主机,一般上面的notify yes为notify explicit时使用
+    allow-transfer { 192.0.2.2; }; //指定从服器的IP
+    allow-update { none; }; //允许更新区域数据库中的内容
+};
+保存并关闭文件
+
 创建区域文件
-创建我们在"/etc/named.conf"文件中提到的正向和反向区域文件。
+现在可以创建实际的区域文件
 
-创建DNS区域
-dapur.fwd在/var/named目录中创建文件。
+vi /var/named/example.com
+区域文件将包含域设置和任何资源记录,这是具有各种资源记录的域的示例
 
-添加以下行：
-
-$TTL 86400
-@       IN      SOA      ns1.dapur.my.id. root.dapur.my.id.(
-                                2019100914      ;Serial
-                                3600            ;Refresh
-                                1800            ;Retry
-                                604800          ;Expire
-                                86400           ;Minimum TTL
+$TTL 3H
+@   IN SOA  @ admin.example.com. (
+                0   ; serial
+                3H  ; refresh
+                1H  ; retry
+                1W  ; expire
+                3H  ; minimum TTL
 )
+;Name Servers
+@       IN      NS              ns1.example.com.
+@       IN      NS              ns2.example.com.
+;Mail Servers
+@       IN      MX      0       mail.example.com.
+;Other Servers
+ns1   86400   IN      A               192.0.2.1
+ns2   86400   IN      A               192.0.2.2
+mail  86400   IN      A               192.0.2.10
+web   86400   IN      A               192.0.2.11
+;Canonical Names
+www   86400   IN      CNAME           web.example.com.
+mail  86400   IN      CNAME           mail.example.com.
+;AAAA Records
+ns1   86400   IN      AAAA            fd15:4ba5:5a2b:1008::1
+ns2   86400   IN      AAAA            fd15:4ba5:5a2b:1008::2
+example.com. IN   TXT    "v=spf1 ip4:203.0.113.42 include:_spf.google.com ~all"
 
-@       IN      NS      ns1.dapur.my.id.
-@       IN      NS      ns2.dapur.my.id.
+该@区域文件中提出了域名本身,在这种情况下,@ 相当于 example.com,尾部（.）用于标识区域文件中域名的结尾
 
-@       IN      A       117.53.44.164
-ns1     IN      A       117.53.44.164
-ns2     IN      A       117.53.44.164
+保存区域文件并退出编辑器 named.conf 在尝试启动服务之前,应确认文件中没有错误
 
-www     IN      CNAME   dapur.my.id.
-
-检查配置文件
-检查DNS默认配置文件：
-
+检查全局配置文件
 named-checkconf /etc/named.conf
-如果未返回任何内容，则说明配置文件有效。
 
-检查区域文件：
+检查域文件
+named-checkzone example.com /var/named/example.com
 
-named-checkzone dapur.my.id /var/named/dapur.fwd
-样本输出：
-zone dapur.my.id/IN: loaded serial 2019100914
-OK
+调整区域文件的文件所有权
+chgrp named /var/named/example.com
 
-启动DNS服务器
-systemctl start named
-systemctl enable named
-systemctl status named
+检查BIND必须重新启动
+systemctl enable --now named.service
+systemctl start named.service
 
-BIND DNS状态
+配置辅助服务器
+登录辅助服务器并修改 /etc/named.conf 文件以使其与主服务器匹配
 
-测试DNS服务器
-dig dapur.my.id
-样本输出：
-[root@dns01 ~]# dig dapur.my.id
+vi /etc/named.conf
 
-; <<>> DiG 9.11.4-P2-RedHat-9.11.4-9.P2.el7 <<>> dapur.my.id
-;; global options: +cmd
-;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 16079
-;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+请参阅"配置主服务器"部分named.conf文件更新后,需要将区域添加到/etc/named.rfc1912.zones辅助服务器上
 
-;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 4096
-;; QUESTION SECTION:
-;dapur.my.id.                   IN      A
+zone "example.com" IN {
+    type slave;
+    file "/var/named/slaves/example.com";
+    masters { 192.0.2.1; }; //指定主DNS服务器信息
+    allow-notify { 192.0.2.1; }; //指定允许notify的主机信息
+    allow-update { none; }; //允许更新区域数据库中的内容
+};
+保存区域文件并退出编辑器 named.conf在尝试启动服务之前,应确认文件中没有错误
 
-;; ANSWER SECTION:
-dapur.my.id.            86400   IN      A       117.53.44.164
+检查全局配置文件
+named-checkconf /etc/named.conf
 
-;; Query time: 3 msec
-;; SERVER: 43.224.19.110#53(43.224.19.110)
-;; WHEN: Wed Oct 09 12:06:56 WIB 2019
-;; MSG SIZE  rcvd: 56
+检查域文件
+named-checkzone example.com /var/named/example.com
 
-nslookup dapur.my.id
-样本输出：
-Server:         43.224.19.110
-Address:        43.224.19.110#53
+调整区域文件的文件所有权
+chgrp named /var/named/example.com
 
-Non-authoritative answer:
-Name:   dapur.my.id
-Address: 117.53.44.164
+检查BIND必须重新启动
+systemctl enable --now named.service
+systemctl start named.service
 
-要确保DNS已解析
-https://intodns.com
+测试DNS解析
+dig可以从任一名称服务器运行以下命令,该名称服务器应返回该服务器上域的记录
+
+dig any example.com @localhost
+您还应该确认可以从能够连接到名称服务器的远程主机检索结果,这将确认连接并且适当的防火墙规则已到位
+
+dig any example.com @192.0.2.1
+dig any example.com @192.0.2.2
+
+修改区域文件
+可以在主要名称服务器上修改区域文件 添加,修改或删除资源记录后,必须记住要增加区域序列号,这是区域的现有序列号example.com.
+
+...
+@   IN SOA  @ admin.example.com. (
+                0   ; serial
+                3H  ; refresh
+...
+如果初始序列号从0开始,则下一个值为1
+
+...
+@   IN SOA  @ admin.example.com. (
+                1   ; serial
+                3H  ; refresh
+...
+一旦区域序列号增加,就需要重新加载区域,无需重新启动该 named 过程即可完成
+
+rndc reload example.com
+重新加载还将启动向辅助服务器的区域传输
+
+反向DNS
+反向DNS是IP地址到域名而不是域名到IP地址的映射, 某些服务, 例如 SMTP 或 Kerberos 可能需要适当的反向解析
+
+在大多数情况下,关于公共IP地址空间,反向DNS将由管理IP子网的服务提供商处理,如果您需要对反向DNS进行调整,建议您与服务提供商的支持部门联系
+
+在某些情况下，子网的反向DNS已委派给您的名称服务器,或者,您可能希望将反向DNS记录分配给专用的内部网络,在这些情况下,将使用名为in-addr.arpa的特殊域,并以反向表示IP范围
+
+192.0.2.0/24子网的区域文件将是2.0.192.in-addr.arpa并且将遵循与主要和辅助名称服务器上的普通区域文件相同的配置过程
+
+将区域添加到主named.rfc1912.zones文件和辅助文件后,即可创建区域
+
+vi /var/named/2.0.192.in-addr.arpa
+这是2.0.192.in-addr.arpa区域文件中PTR记录的示例
+
+$TTL 3H
+@   IN SOA  @ admin.example.com. (
+                2    ; serial
+                3H   ; refresh
+                1H   ; retry
+                1W   ; expire
+                3H   ; minimum
+)
+;Name Servers
+@        IN    NS    ns1.example.com.
+@        IN    NS    ns2.example.com.
+;Other Servers
+ns1      IN    A       192.0.2.1
+ns2      IN    A       192.0.2.2
+ns1      IN    AAAA    fd15:4ba5:5a2b:1008::1
+ns2      IN    AAAA    fd15:4ba5:5a2b:1008::2
+;PTR Records
+1        IN    PTR   ns1.example.com.
+2        IN    PTR   ns2.example.com.
+10       IN    PTR   example.com.
+11       IN    PTR   www.example.com.
+12       IN    PTR   host.example.com.
+;PTR Records
+1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0    IN      PTR    ns1.example.com.
+2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0    IN      PTR    ns2.example.com.
+
+将反向IPv6地址分解为两个64位地址
+http://rdns6.com/hostRecord
+
+解决DNS问题
+配置文件中的语法错误很容易被忽略,因此,始终建议named-checkconf在开始或重新启动该named过程之前运行
+named-checkconf example.com /var/named/2.0.192.in-addr.arpa
+
+发生问题时,named日志文件是开始查找的第一个位置, CentOS上的日志文件可在以下位置找到：
+/var/named/data/named.run
+
+调整区域文件的文件所有权
+chgrp named /var/named/2.0.192.in-addr.arpa
+
+检查BIND必须重新启动
+systemctl enable --now named.service
+systemctl start named.service
+
+在bind-utils包括几个实用程序,如dig,nslookup,host这些可用于直接针对权威名称服务器验证查询,它们将需要域名,权威服务器以及可选的资源记录作为参数
+
+dig mx example.com @192.0.2.1
+对权威名称服务器的查询将显示当前区域和资源记录,而不考虑缓存或TTL
+
+配置Systemd以保持BIND运行
+
+首先,制作我们将要编辑的BIND systemd服务文件的副本：
+
+cp /lib/systemd/system/named.service /etc/systemd/system/
+这样可以确保所做的编辑不会在以后的系统更新中丢失,接下来,在编辑器中打开文件：
+
+vi /etc/systemd/system/named.service
+并将以下两行添加到该[Service]部分：
+
+Restart=always
+RestartSec=3
+然后提示Systemd重新加载其所有服务文件：
+
+systemctl daemon-reload
+并重新启动BIND：
+
+systemctl restart named.service
+如果BIND由于某种原因停止运行, systemd将自动重新启动它
+
+
+
+
+1.DNS查询方式
+
+迭代查询：客户端向本地 DNS 服务器发出请求后，一直处于等待状态，直到本地名称服务器返回查询结果。以访问 www.baidu.com 为例叙述迭代查询过程。当客户端向本地 DNS 服务器发出请求后，本地 DNS 服务器查询本机缓存，如果有记录，则直接返回；如果没有，则本地 DNS 服务器以客户端的身份将查询请求发给根名称服务器，这个过程是递归查询过程。根名称服务器通过查询返回给本地 DNS 服务器 .com 顶级名称服务器的IP地址；本地DNS服务器收到 .com 顶级名称服务器的IP地址后继续向.com顶级名称服务器发出请求，顶级名称服务器收到请求后查询缓存，如果有记录则直接返回本地DNS服务器，如果没有，则返回baidu.com二级名称服务器的IP地址；本地名称服务器继续发出请求，二级名称服务器同样查找缓存返回www.baidu.com的IP地址。(最多127级域)。
+
+递归查询：客户端和本地DNS服务器的查询就属于递归查询，客户端发出查询请求后处于等待状态，本地DNS以客户端身份询问下一个DNS服务器，直到本地DNS服务器返回确定回复或否定答复。
+
+一次完整的查询请求经过的流程： Client -->hosts文件 -->DNS Service Local Cache --> DNS Server (recursion) --> Server Cache --> iteration(迭代) --> 根
+
+--> 顶级域名DNS-->二级域名DNS…
+回到顶部
+2.DNS服务器类型
+
+主名称服务器(primary name server)。从域管理员构造的本地磁盘文件中加载域信息，该文件（区域文件）包含着该服务器具有管理权的一部分域结构
+
+的最精确信息。主服务器是一种权威性服务器，因为它以绝对的权威去回答对其管辖域的任何查询。
+
+ 从名称服务器(secondary name server)。它可从主服务器中复制一整套域信息。区域文件是从主服务器中复制出来的，并作为本地磁盘文件存储在辅助
+
+服务器中。这种复制称为”区域文件复制”。在辅助域名服务器中有一个所有域信息的完整拷贝，可以有权威地回答对该域的查询。因此，辅助域名服务器
+
+也称作权威性服务器。配置辅助域名服务器不需要生成本地区文件，因为可以从主服务器中下载该区文件。
+
+唯高速缓存名称服务器(caching-only server)。可运行域名服务器软件，但是没有域名数据库软件。它从某个远程服务器取得域名服务器查询的结果，一
+
+旦取得一个，就将它放在高速缓存中，以后查询相同的信息时就用它予以回答。高速缓存服务器不是权威性服务器，因为它提供的所有信息都是间接信息。
+
+当BIND被配置为缓存服务器的时候，它只会回应已缓存的请求，并将所有其他的请求转发到上游的 DNS 服务器。缓存名称服务器只需要.这个zone file文件
+
+即可。
+回到顶部
+3.DNS配置的主要文件组
+
+/etc/hosts　　主机的一个文件列表 　　添加记录如:111.13.100.92   www.baidu.com
+
+对于简单的主机名解析（点分表示法），默认在请求DNS或NIS网络域名服务器前，/etc/named.conf 通常会告诉程序先查看此文件。
+
+/etc/resolv.conf　　转换程序配置文件
+
+在配置程序请求BIND域名查询服务查询主机名时，必须告诉程序使用哪个域名服务器和IP地址来完成这个任务
+
+/etc/named.conf　　BIND主文件
+
+设置一般的name参数，指向该服务器使用的域数据库的信息源
+
+/var/named/named.ca　　根域名配置服务器指向文件
+
+指向根域名配置服务器，用于告诉缓存服务器初始化
+
+/var/named/localhost.zone　   localhost区正向域名解析文件
+
+用于将本地IP地址（127.0.0.1）转换为本地回送IP地址（127.0.0.1）
+
+/var/named/name.local　　localhost区反向域名解析文件
+
+用于将localhost名字转换为本地回送IP地址（127.0.0.1）
+
+/etc/named.rfc1912.zones　　区块设置文件
+
+4.name.conf文件的配置
+
+acl　　定义ip地址的访问控制清单
+
+control　　定义rndc使用的控制通道
+
+include　　把其他的文件包含到配置文件中
+
+key　　定义授权的安全密钥
+
+logging　　定义日志内容和位置
+
+options　　定义全局配置选项和默认值
+
+server　　定义远程服务的特征
+
+zone　　定义一个区
+
+5.DNS的资源记录（Resource Record, RR）格式
+
+DNS域名数据库有资源记录和区文件指令组成，由SOA（Start Of Authority起始授权机构记录，SOA 记录说明了在众多NS记录里那一台才是主名称服
+
+务器。责） RR开始，同时包括NS RR；正向解析文件包括A  （internet Address，作用，FQDN --> IP）RR  MX （Mail eXchanger，邮件交换器）RR
+
+和 CNAME（Canonical NAME 别名） RR 等；反向解析文件包括PTR（PTR: PoinTeR，IP --> FQDN） RR
+
+RR 语法：name　　[TTL]　　IN　　type　　value （字段之间由空格和制表符隔开）
+
+注意： (1) TTL可从全局继承　　(2) @可用于引用当前区域的名字 　　(3) 同一个名字可以通过多条记录定义多个不同的值；此时 DNS服务器会以轮询方
+
+式响应 　　(4) 同一个值也可能有多个不同的定义名字；通过多个不同的 名字指向同一个值进行定义；此仅表示通过多个不同的名字 可以找到同一个主机
+
+SOA记录：name: 当前区域的名字，例如“heiye.com.” 　　value: 有多部分组成 (1) 当前区域的主DNS服务器的FQDN，也可以使用当前区域的名字；  
+
+(2) 当前区域管理员的邮箱地址；地址中不能使用@符号，一般用.替换 如linuxedu.heiye.com  (3) 主从服务区域传输相关定义以及否定的答案的统一的TTL 
+
+例如： heiye.com.　　86400 　　IN 　　SOA 　　ns.heiye.com.
+
+　　　 nsadmin.heiye.com. 　　(
+
+　　　 　　　　2015042201 ;
+
+　　　　　　　 序列号 2H ;
+
+　　　　　　　 刷新时间 10M ;
+
+　　　　　　　 重试时间 1W ;
+
+　　　　　　　 过期时间 1D ;
+
+　　　　　　　 否定答案的TTL值
+
+　　　)
+
+NS记录：name: 当前区域的名字 　　value: 当前区域的某DNS服务器的名字，例如 ns.heiye.com. 注意：一个区域可以有多个NS记录
+
+例如：heiye.com. 　　IN 　　NS　　ns1.heiye.com.  
+
+　　　heiye.com. 　　IN 　　NS 　   ns2.heiye.com.
+
+注意： (1) 相邻的两个资源记录的name相同时，后续的可省略 (2) 对NS记录而言，任何一个ns记录后面的服务器名字 ，都应该在后续有一个A记录
+
+MX记录（Mail eXchanger）：name: 当前区域的名字 　　value: 当前区域的某邮件服务器(smtp服务器)的主机名 ， 一个区域内，MX记录可有多个；
+
+但每个记录的value之前应 该有一个数字(0-99)，表示此服务器的优先级；数字越小优 先级越高  例如：
+
+heiye.com. 　　IN 　　MX 　　10 　　mx1.heiye.com.
+
+　　　　　　　 IN 　　MX 　　20 　　mx2.heiye.com.
+
+注意： (1) 对MX记录而言，任何一个MX记录后面的服务器名字 ，都应该在后续有一个A记录
+
+A记录（Addrss）:name: 某主机的FQDN，例如www.heiye.com. 　　value: 主机名对应主机的IP地址
+
+例如： www.heiye.com. 　　IN 　　A 　　1.1.1.1 　　
+
+　　　 www.heiye.com.　　 IN 　　A 　　2.2.2.2 　　
+
+　　　 mx1.heiye.com. 　　IN 　　A 　　3.3.3.3
+
+　　　 mx2.heiye.com.    　 IN 　　A 　　4.4.4.4
+
+　　　 *.heiye.com. 　　　  IN 　　A 　　5.5.5.5
+
+　　　 heiye.com. 　　　　IN 　　A 　　 6.6.6.6 　　
+
+避免用户写错名称时给错误答案，可通过泛域名解析进行解 析至某特定地址
+
+其他记录：AAAA: name: FQDN 　　value: IPv6 　　　　
+
+　　　　　PTR: name: IP，有特定格式，把IP地址反过来写，1.2.3.4，要写 作4.3.2.1；而有特定后缀：in-addr.arpa.，所以完整写法为 ：
+
+4.3.2.1.in-addr.arpa. 　　value: FQDN
+
+例如： 4.3.2.1.　　in-addr.arpa. 　　IN 　　PTR 　　www.heiye.com.
+
+如1.2.3为网络地址，可简写成： 4 　　IN 　　PTR 　　www.heiye.com.
+
+注意：网络地址及后缀可省略；主机地址依然需要反着写
+
+别名记录:name: 别名的FQDN 　　value: 真正名字的FQDN
+
+例如： www.heiye.com. 　　IN 　　CNAME 　　websrv.heiye.com.
+
+named字段：
+
+#####（1）根域以” . “结束，并且只有一个，没有上级域。而在Internet中，根域一般不需要表现出来。
+
+#####（2）@：默认域，文件使用$ORIGIN domain 来说明默认域。
+
+#####（3）ttl 全称”Time to Live “，以秒为单位记录该资源记录中存放高速缓存中的时间长度。通常此处设为空，表示采用SOA的最小ttl值。
+
+#####（4）IN：将该记录标志为一个Internet DNS资源记录。
+
+type字段:
+
+#####(1)A记录：主机名对应的IP地址记录，用户可将该域名下网站服务器指向自己的Web服务器，同时也可设置域名的二级域名。
+
+#####(2)MX记录：邮件交换记录可将该域下所有邮件服务器 指向自己的邮件服务器，只需在线填写服务器的IP地址。
+
+#####(3)CNAME记录：别名记录，可允许多个名字映射到同一计算机，通常用于同时提供Web和邮件服务器的计算机。
+
+#####(4)SOA记录：一个授权区的开始，配置文件的第一个记录必须是SOA的开始。
+
+#####(5)PTR记录：用于地址到主机名的映射。
+
+#####(6)HINFO记录：由一组描述主机的信息文件组成，通常包括硬件名称和操作系统名称。
+
+value字段：
+
+#####（1）A :存放IP地址。
+
+#####（2）CNAME：设置主机别名。
+
+#####（3）HINFO：通常为两行，分别对应Hareware（计算机硬件名称）和OS-type（操作系统名称）。
+
+#####（4）NS：域名服务器的名称。
+
+#####（5）PTR:主机真实名称。
+
+测试检查配置文件错误的工具：nslookup、dig、named-checkzone、host、named-checkconf及dlint。
+
+6.DNS服务器和客户端配置
+
+BIND的安装配置： dns服务程序包:bind，unbound
+
+　　　　　　　　   程序名：named，unbound
+
+　　　　　　　　　程序包：yum list all bind*
+
+　　　　　　　　　　　　　bind：服务器
+
+　　　　　　　　　　　　　bind-libs：相关库
+
+　　　　　　　　　　　　　bind-utils；客户端
+
+　　　　　　　　　　　　　bind-chroot: /var/named/chroot/
+
+注意： (1) 一台物理服务器可同时为多个区域提供解析 (2) 必须要有根区域文件；named.ca
+
+　　　 (3) 应该有两个（如果包括ipv6的，应该更多）实现localhost 和本地回环地址的解析库
+
+主配置文件： /etc/named.conf (用户和属组需为root权限，否则BIND无法启动)。
+
+　　　　全局配置：options {};
+
+　　　　日志子系统配置：logging {};
+
+　　　　区域定义：本机能够为哪些zone进行解析，就要定义哪 些zone 　　zone "ZONE_NAME" IN {};
+
+注意：任何服务程序如果期望其能够通过网络被其它主机访 问，至少应该监听在一个能与外部主机通信的IP地址上。
+
+缓存名称服务器的配置： 监听外部地址即可 ；dnssec: 建议关闭dnssec，设为no。
+
+ 
+
+配置主DNS服务器： (1) 在主配置文件中定义区域 zone   "ZONE_NAME" IN  {
+
+　　　　　　　　　　　　　　　　　　　　　　  type {master|slave|hint|forward};
+
+　　　　　　　　　　　　　　　　　　　　　　  file "ZONE_NAME.zone";
+
+　　　　　　　　　　　　　　　　　　　　　　   };
+
+　　　　　　　　　  (2) 定义区域解析库文件 出现的内容；宏定义；资源记录
+
+主配置文件语法检查： named-checkconf
+
+DNS测试：dig www.qq.com  (@ IP)向IP这个DNS服务器询问，不写默认为本机/etc/resolv.conf
+
+7.搭建简单的DNS正向解析服务器
+
+在172.18.251.219主机上
+
+vim /etc/named.conf
+
+vim  /etc/named/rfc1912.zones
+
+cd  /var/named/
+
+cp -a  named.localhost  heiye.com.zone
+
+vim  /heiye.com.zone
+
+named-checkconf  （检查主配置文件语法）
+
+named-checkzone   heiye.com   /var/named/heiye.com.zone  (版本号最好不超过10位！)
+
+service named reload 
+
+dig  www.heiye.com  @127.0.0.1   (测试)
+
+在172.18.252.229主机上
+
+在172.18.250.128上
+
+vim  /var/www/html/index.html
+
+ok!到此环境搭建完成
+
+在172.18.252.229上测试：
+
+加点儿料：
+
+把DNS指向172.18.251.219
+
+这样即便主机www写错，DNS也能正确解析出来。这就是泛域名解析。
+
+再加一行
+
+rndc load 重新加载，如果不行则重启服务。
+
+这样即使不写主机名，DNS也能解析到另外一个指定的地址
+
+如果服务器过多，对应主机名也很多，则可以
+
+8.配置DNS反向解析解析
+
+vim  /etc/named.rfc1912.zones
+
+vim  /var/named/172.18.251.219.zone
+
+named-checkzone    "172.18.251.219.zone"   /var/named/172.18.251.219.zone
+
+检查没语法问题之后，重新加载zone，rndc  reload
+
+9.配置bind-chroot环境
+
+DNS在历史上饱受攻击，故而为了系统安全，不影响其他进程和服务，需要将named服务单独放在一个比较深的目录里，以目录挂载目录实现。
+
+yum  -y  install   bind-chroot
+
+ll
+
+dig  [-t type]  name   [@SERVER]   [query options] （dig只用于测试dns系统，不会查询hosts文件进行解析 ）
+
+查询选项： +[no]trace：跟踪解析过程 : dig +trace heiye.com
+
+　　　　　 +[no]recurse：进行递归解析
+
+　　　　　 测试反向解析： dig -x IP = dig –t ptr reverseip.in-addr.arpa
+
+　　　　　 模拟区域传送： dig -t axfr ZONE_NAME @SERVER
+
+　　　　　　　　　　　　  dig -t axfr heiye.com @10.10.10.11
+
+　　　　　　　　　　　　  dig –t axfr 100.1.10.in-addr.arpa @172.16.1.1
+
+　　　　　　　　　　　　  dig -t NS . @114.114.114.114
+
+　　　　　　　　　　　　  dig -t NS . @a.root-servers.net
+
+dig -t  ns heiye.com @172.18.251.219   （查指定域的记录）
+
+dig -t ns .　　查根域的A记录
+
+邮件服务器：
+
+其中10为邮件服务器优先级，数字越小优先级越高！
+
+host命令：
+
+host     [-t type]    name      [SERVER]
+host    –t    NS     heiye.com    172.16.0.1
+host　  –t    soa    heiye.com
+host    –t    mx     heiye.com 　
+host    –t    axfr   heiye.com
+
+host 1.2.3.4
+
+nslookup命令：
+
+交互式模式：
+nslookup>
+server IP: 指明使用哪个DNS server进行查询
+set q=RR_TYPE: 指明查询的资源记录类型
+NAME: 要查询的名称
+
+nslookup在window中和linux中用法相同！
+
+rndc reload 重新加载view的zone
+
+允许动态更新：指定的zone语句块中：Allow-update {any;}; 
+　　　　　　　 chmod 770 /var/named 
+　　　　　　　 setsebool -P named_write_master_zones on （selinux为启用状态时）
+　　　　　　　 nsupdate 
+　　　　　　　 >server 172.18.251.219
+　　　　　　　 >zone  heiye.com
+　　　　　　　 >update add |delete   ftp.heiye.com   86400   IN  A  8.8.8.8
+　　　　　　　 >send
+　　　　　　　 测试：dig ftp.heiye.com @127.0.0.1
+
+ll /var/named/heiye.com.zone.jnl
+
+cat /var/named/heiye.com.zone
+
+DNS主从数据库更新的标志是版本号的更改！
+
+DNS默认端口是53的TCP和UPD,UDP是供用户查询的，主从复制用TCP和UDP的53端口都用。
+
+BIND的ACL：bind有四个内置的acl:
+　　 none: 没有一个主机
+　　 any: 任意主机
+　　 localhost: 本机
+　　 localnet: 本机的IP同掩码运算后得到的网络地址段
+　　 注意：只能先定义，后使用；因此一般定义在配置文件中， 处于options的前面，当然也可自定义如下
+　　 acl   lan｛
+        　　192.168.25.0/24
+　　 } ;
+访问控制：
+　　访问控制的指令： allow-query {}： 允许查询的主机；白名单
+　　　　　　　　　　 allow-transfer {}：允许区域传送的主机；（白名单，一般用于主从）
+　　　　　　　　　　 allow-recursion {}: 允许递归的主机,建议全局使用
+　　　　　　　　　　 allow-update {}: 允许更新区域数据库中的内容
