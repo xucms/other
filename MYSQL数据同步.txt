@@ -173,7 +173,7 @@ binlog-ignore-db=mysql   #不同步mysql系统数据库。
 授权主节点远程访问
 # mysql -u root -p
 
-mysql> GRANT REPLICATION SLAVE ON *.* TO 'slave_cms'@'从IP节点' IDENTIFIED BY 'h2tYXkL4sHXt6MVr' WITH GRANT OPTION;
+mysql> GRANT REPLICATION SLAVE ON *.* TO 'slave_cms'@'从IP节点' IDENTIFIED BY 'XXXXXXXXXXXX' WITH GRANT OPTION;
 mysql> SELECT DISTINCT CONCAT('User: ''',user,'''@''',host,''';') AS query FROM mysql.user;
 
 mysql> FLUSH PRIVILEGES;
@@ -184,7 +184,7 @@ mysql> show global variables like 'port';
 
 配置从节点供主节点访问
 # mysql -u root -p
-mysql> change master to master_host='主IP节点',master_user='slave_cms',master_password='h2tYXkL4sHXt6MVr',master_log_file='mysql-bin.000001',master_log_pos=120;
+mysql> change master to master_host='主IP节点',master_user='slave_cms',master_password='XXXXXXXXXXXX',master_log_file='mysql-bin.000001',master_log_pos=120;
 mysql> FLUSH PRIVILEGES;
 
 mysql> start slave; 
@@ -202,7 +202,7 @@ mysql> stop slave;
 
 找到Relay_Master_Log_File和Exec_Master_Log_Pos，表示目前同步到了master的哪个binlog文件，以及binlog文件的哪个偏移量
 修改同步起点
-mysql> change master to master_log_file='bin.000001' , master_log_pos=242312863;
+mysql> change master to master_log_file='mysql-bin.000001' , master_log_pos=242312863;
 
 重启同步
 mysql> start slave;
