@@ -195,18 +195,17 @@ mysql> stop slave;
 
 重启服务器后数据不同步方法
 找到断点
-show slave status\G;
+mysql> show slave status\G;
 
 停止主从
-stop slave;
+mysql> stop slave;
 
 找到Relay_Master_Log_File和Exec_Master_Log_Pos，表示目前同步到了master的哪个binlog文件，以及binlog文件的哪个偏移量
-
 修改同步起点
-change master to master_log_file='bin.000001' , master_log_pos=242312863;
+mysql> change master to master_log_file='bin.000001' , master_log_pos=242312863;
 
 重启同步
-start slave;
+mysql> start slave;
 
 重新检查同步是否恢复
-show slave status\G;
+mysql> show slave status\G;
