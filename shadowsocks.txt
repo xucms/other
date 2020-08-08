@@ -166,7 +166,9 @@ $ vi /etc/shadowsocks.json
     "local_port":1080,
     "password":"password",
     "timeout":300,
+    "user":"nobody",
     "method":"chacha20-ietf-poly1305",
+    "nameserver":"8.8.8.8",
     "fast_open": false
 }
 
