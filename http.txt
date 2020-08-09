@@ -1,0 +1,4 @@
+电脑 tencent://message/?Menu=yes&uin={YourQQCode}&Site={SiteDomain}
+手机 mqqwpa://im/chat?chat_type=wpa&uin={YourQQCode}&version=1&src_type=web&web_src={SiteDomain}
+微信 weixin://
+添加 weixin://dl/add
