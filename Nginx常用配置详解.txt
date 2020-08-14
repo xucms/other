@@ -88,6 +88,10 @@ server {
   index index.html index.htm index.php;
   root /data/www/www.xx.com;
 
+  location ~* ^/(Lib|Runtime)/.*.(php|php5)$ {
+    deny all;
+  }
+
   # 图片缓存时间设置
   location ~ .*.(gif|jpg|jpeg|png|bmp|swf)$ {
     expires 10d;
