@@ -88,7 +88,7 @@ server {
   index index.html index.htm index.php;
   root /data/www/www.xx.com;
 
-  # 禁止该目录下运行PHP文件
+  # 禁止目录执行PHP文件
   location ~* ^/(Lib|Runtime)/.*.(php|php5)$ {
     deny all;
   }
